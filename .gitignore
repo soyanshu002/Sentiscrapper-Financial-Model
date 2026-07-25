@@ -1,0 +1,38 @@
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+backend/.venv/
+
+# Environment variables & secrets
+.env
+.env.local
+*.env
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Trained ML Models & Data Artifacts
+*.pkl
+*.keras
+*.h5
+*.onnx
+backend/data/models/
+backend/backend/
+
+# Node.js dependencies & build output
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# IDEs & OS metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.ipynb_checkpoints/
