@@ -36,3 +36,5 @@ Thumbs.db
 .vscode/
 .idea/
 .ipynb_checkpoints/
+
+interview_prep.models
