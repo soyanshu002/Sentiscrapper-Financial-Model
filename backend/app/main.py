@@ -55,6 +55,7 @@ class AnalysisResponse(BaseModel):
     agent_logs: List[str]
 
 @app.post("/api/analyze", response_model=AnalysisResponse)
+@app.post("/api/analyze/", response_model=AnalysisResponse)
 async def analyze_stock(request: AnalysisRequest):
     logger.info(f"Received analysis request for {request.ticker} using {request.model_type}")
     try:
