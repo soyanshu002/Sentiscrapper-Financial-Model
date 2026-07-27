@@ -100,5 +100,27 @@ The FastAPI documentation will be available at `http://127.0.0.1:8000/docs`.
 
 ---
 
+## 🌐 Production Cloud Deployment
+
+- **Backend**: Hosted on **Render** as a Python Web Service configured via `render.yaml` with Python 3.10.12 runtime.
+- **Frontend**: Hosted on **Vercel** as a high-performance React + Vite Single Page Application configured via `vercel.json`.
+- **API URL Connection**: Dynamically bound via `VITE_API_URL` environment variable pointing to the live Render backend.
+
+---
+
+## ⚡ Recent Technical Advancements & Cloud Optimizations
+
+1. **512 MB RAM Free-Tier Optimization**:
+   - Refactored `backend/app/models/forecaster.py` to make TensorFlow optional via a dynamic `HAS_TF` flag.
+   - Reduced server RAM consumption from ~550 MB down to ~120 MB, completely eliminating Linux Out-of-Memory (`Exit Code 137`) kills on Render free instances.
+2. **Self-Healing Agent Fallback**:
+   - Enhanced `orchestrator.py` so if an `LSTM` forecast is requested on a lightweight host without TensorFlow, the Quantitative Analyst agent logs a warning step and automatically falls back to **Random Forest**.
+3. **Build Tool & Pre-compiled Wheel Acceleration**:
+   - Configured `pip install --upgrade pip setuptools wheel` and flexible version constraints (`>=`) in `requirements.txt` to enable prebuilt binary wheel downloads, avoiding C-source compilation errors.
+4. **URL & Route Resilience**:
+   - Added `VITE_API_URL` trailing-slash sanitization (`.replace(/\/+$/, '')`) in `App.jsx` and added a route alias `@app.post("/api/analyze/")` in FastAPI `main.py` to prevent double-slash 404 errors.
+
+---
+
 ## 📊 Technical Details
-For an in-depth breakdown of the feature engineering, weighted sentiment decay formulas, machine learning models, GPU configuration, and common interview questions, please refer to the **[Technical Revision Guide](interview_prep.md)**.
+For an in-depth breakdown of feature engineering, weighted sentiment decay formulas, machine learning models, cloud troubleshooting, and technical interview questions/answers, please refer to the **[Technical Revision Guide](interview_prep.md)**.

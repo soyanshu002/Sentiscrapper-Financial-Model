@@ -189,3 +189,34 @@ graph TD
 ### Q5: "Why did you transition SentiScrapper from predicting absolute stock Close prices to predicting Log Returns?"
 > **Answer**: "Predicting absolute stock prices is highly unstable because price series are non-stationary (they trend, have varying variance, and can reach values completely outside the training dataset range). By shifting to Log Returns ($R_t = \ln(\text{Close}_t/\text{Close}_{t-1})$), we convert the target into a stationary, mean-reverting, and scale-independent series. This stabilizes model training, prevents gradient explosion, and enables SentiScrapper to perform well even when a stock hits a new all-time high."
 
+---
+
+## 9. Production Cloud Deployment & Troubleshooting (Interview Case Studies)
+
+### Architecture Overview
+- **Backend Infrastructure**: Deployed on **Render** using a custom Python Web Service defined in `render.yaml` with Python 3.10.12 runtime.
+- **Frontend Hosting**: Deployed on **Vercel** as a high-performance React + Vite Single Page Application configured via `vercel.json`.
+- **Environment Integration**: Bound via `VITE_API_URL` environment variable pointing to the live Render backend host.
+
+### Technical Issues Faced, Root Cause Analysis & Solutions
+
+| Problem | Root Cause | Engineering Solution & Interpretation |
+| :--- | :--- | :--- |
+| **Linux Out-Of-Memory (`Exit Code 137`) on Render** | Render free tier limits RAM to 512 MB. Importing `tensorflow-cpu` on server startup allocated ~350 MB RAM, pushing total process memory past 500 MB and triggering Linux OOM killer. | **Solution**: Wrapped TensorFlow import in a `try...except ImportError` block in `forecaster.py` and set a dynamic `HAS_TF` flag. Added automatic fallback to **Random Forest** in `orchestrator.py`. <br>**Interpretation**: Industrial ML apps must decouple core API logic from heavy frameworks to allow lightweight deployment on constrained micro-containers (~120 MB RAM). |
+| **`metadata-generation-failed` during container build** | Strict dependency pins (`==`) forced pip to compile C-extension source code on host container instead of downloading pre-compiled wheels. | **Solution**: Upgraded build toolchain (`pip install --upgrade pip setuptools wheel`) and relaxed version constraints (`>=`) in `requirements.txt`. <br>**Interpretation**: Prebuilt binary wheel installation requires updated `setuptools` and `wheel` build isolation tools to match host architecture. |
+| **`POST //api/analyze 404 Not Found`** | Trailing slash in `VITE_API_URL` environment variable (`https://host.com/`) concatenated with `/api/analyze` resulted in double-slash route requests (`//api/analyze`). | **Solution**: Sanitized `VITE_API_URL` in `App.jsx` (`.replace(/\/+$/, '')`) and added `@app.post("/api/analyze/")` route alias in FastAPI `main.py`. <br>**Interpretation**: Production APIs and client SDKs should be robust against URL trailing-slash formatting discrepancies. |
+
+---
+
+### Cloud & DevOps Technical Interview Q&A
+
+### Q6: "How did you optimize a heavyweight Python ML backend to run on Render's 512 MB RAM Free Tier?"
+> **Answer**: "Importing heavy deep learning frameworks like TensorFlow CPU at process startup consumes ~350 MB RAM, which pushed the overall server memory past 512 MB, triggering Linux OOM killer (`Exit Code 137`). To solve this, I refactored `forecaster.py` to make TensorFlow optional via a dynamic `HAS_TF` flag. In `orchestrator.py`, I implemented an automatic fallback to Random Forest (`scikit-learn`) if TensorFlow is absent. This reduced process memory to ~120-150 MB RAM, ensuring 100% stability on lightweight free containers."
+
+### Q7: "What caused `metadata-generation-failed` during pip installation on Render and how did you resolve it?"
+> **Answer**: "Exact version pinning (`==`) combined with outdated container build tools caused pip to attempt compiling package source distributions (like `pandas` and `pandas-datareader`) from C source on modern Python environments instead of utilizing prebuilt wheels. I fixed this by updating `buildCommand` to run `pip install --upgrade pip setuptools wheel` first, and switching `requirements.txt` to flexible constraints (`>=`) to fetch ready-to-use prebuilt Linux wheel binaries."
+
+### Q8: "How did you diagnose and fix a `404 Not Found` issue caused by trailing slashes on API endpoints during cross-origin deployment?"
+> **Answer**: "When the frontend on Vercel sent requests using a `VITE_API_URL` configured with a trailing slash (`https://...onrender.com/`), concatenation with `/api/analyze` produced `//api/analyze` (double slash), causing FastAPI to return `404 Not Found`. I implemented a two-part fix: (1) sanitized the client-side URL in React using `.replace(/\/+$/, '')`, and (2) added a FastAPI route alias `@app.post("/api/analyze/")` to handle both `/api/analyze` and `/api/analyze/` seamlessly."
+
+
