@@ -94,13 +94,18 @@ class MultiAgentOrchestrator:
         # Fit model
         eval_metrics = {}
         if model_type.lower() == "lstm":
-            # LSTM requires sequential prep
-            eval_metrics = self.pipeline.train_lstm(X, y, df['Close'], epochs=10)
+            if not self.pipeline.has_tf:
+                self.log_step("Quant Agent", "TensorFlow not installed in current environment. Gracefully falling back to Random Forest engine.")
+                model_type = "Random Forest"
+                eval_metrics = self.pipeline.train_random_forest(X, y, df['Close'])
+            else:
+                # LSTM requires sequential prep
+                eval_metrics = self.pipeline.train_lstm(X, y, df['Close'], epochs=10)
         else:
             # Default to Random Forest
             eval_metrics = self.pipeline.train_random_forest(X, y, df['Close'])
 
-        self.log_step("Quant Agent", f"Model trained. Validation Metrics: MSE={eval_metrics['mse']:.4f}, MAE={eval_metrics['mae']:.4f}, R²={eval_metrics['r2']:.4f}")
+        self.log_step("Quant Agent", f"Model trained ({model_type}). Validation Metrics: MSE={eval_metrics['mse']:.4f}, MAE={eval_metrics['mae']:.4f}, R²={eval_metrics['r2']:.4f}")
         self.log_step("Quant Agent", f"Backtest Directional Accuracy: {eval_metrics['directional_accuracy']*100:.2f}%")
 
         # Predict future 5 days
@@ -109,7 +114,7 @@ class MultiAgentOrchestrator:
         
         future_dates = pd.date_range(start=last_row['Date'], periods=6, freq='D')[1:]
         
-        if model_type.lower() == "lstm":
+        if model_type.lower() == "lstm" and self.pipeline.has_tf:
             future_predictions = self.pipeline.predict_future_lstm(df, future_days=5)
         else:
             future_predictions = self.pipeline.predict_future_rf(last_row, future_days=5)

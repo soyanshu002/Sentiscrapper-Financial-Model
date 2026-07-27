@@ -11,25 +11,31 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-# Silence tensorflow logging spam
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import tensorflow as tf
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Dense, LSTM, Dropout
-
 logger = logging.getLogger("ForecastingEngine")
 
-# Check GPU availability
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        logger.info(f"NVIDIA GPU detected and configured: {gpus}")
-    except RuntimeError as e:
-        logger.warning(f"Error configuring GPU: {e}")
-else:
-    logger.info("TensorFlow running on CPU (No GPU detected).")
+# Silence tensorflow logging spam if available
+try:
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential, load_model
+    from tensorflow.keras.layers import Dense, LSTM, Dropout
+    HAS_TF = True
+
+    # Check GPU availability
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logger.info(f"NVIDIA GPU detected and configured: {gpus}")
+        except RuntimeError as e:
+            logger.warning(f"Error configuring GPU: {e}")
+    else:
+        logger.info("TensorFlow running on CPU (No GPU detected).")
+except ImportError:
+    HAS_TF = False
+    logger.warning("TensorFlow is not installed in this environment. LSTM model is disabled; Random Forest will be used.")
+
 
 class ForecasterPipeline:
     FEATURES = [
@@ -44,6 +50,7 @@ class ForecasterPipeline:
         os.makedirs(self.model_dir, exist_ok=True)
         self.rf_model = None
         self.lstm_model = None
+        self.has_tf = HAS_TF
         self.feature_scaler = MinMaxScaler(feature_range=(0, 1))
         self.target_scaler = MinMaxScaler(feature_range=(0, 1))
         self.imputer = KNNImputer(n_neighbors=5)
@@ -139,6 +146,9 @@ class ForecasterPipeline:
         Prepares sequences and trains an LSTM neural network on returns.
         Leverages GPU if available. Evaluates on reconstructed Close prices.
         """
+        if not HAS_TF:
+            raise RuntimeError("TensorFlow is not installed in this environment. LSTM forecasting is unavailable; please use Random Forest.")
+
         logger.info(f"Training LSTM model (time_step={time_step})...")
         
         # Scale data
@@ -271,6 +281,9 @@ class ForecasterPipeline:
         Predicts close prices using the trained LSTM model.
         Requires past `time_step` records to construct the final sequence and predict forward.
         """
+        if not HAS_TF:
+            raise RuntimeError("TensorFlow is not installed in this environment. LSTM forecasting is unavailable; please use Random Forest.")
+
         if self.lstm_model is None:
             lstm_path = os.path.join(self.model_dir, "lstm_model.keras")
             if os.path.exists(lstm_path):
