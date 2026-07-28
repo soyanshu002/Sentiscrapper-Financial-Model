@@ -21,6 +21,9 @@ __pycache__/
 *.keras
 *.h5
 *.onnx
+*.xlsx
+*.xls
+*.csv
 backend/data/models/
 backend/backend/
 
