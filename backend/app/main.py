@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -6,6 +7,7 @@ import os
 import uvicorn
 import logging
 from app.agents.orchestrator import MultiAgentOrchestrator
+from app.reports.excel_generator import ExcelReportGenerator
 from app.config import settings
 
 # Setup logging
@@ -71,6 +73,25 @@ async def analyze_stock(request: AnalysisRequest):
         raise HTTPException(
             status_code=500,
             detail=f"An error occurred while compiling stock analysis: {str(e)}"
+        )
+
+@app.post("/api/export/excel")
+@app.post("/api/export/excel/")
+async def export_excel_report(data: Dict[str, Any]):
+    try:
+        excel_stream = ExcelReportGenerator.generate_workbook(data)
+        ticker = data.get("ticker", "Stock")
+        filename = f"SentiScrapper_Financial_Model_{ticker}.xlsx"
+        return StreamingResponse(
+            excel_stream,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        logger.error(f"Error generating Excel report: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate Excel report: {str(e)}"
         )
 
 @app.get("/api/health")

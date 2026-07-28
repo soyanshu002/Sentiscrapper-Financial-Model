@@ -18,7 +18,8 @@ import {
   ExternalLink,
   TrendingDown,
   Info,
-  Calendar
+  Calendar,
+  FileSpreadsheet
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -102,6 +103,83 @@ const renderMarkdown = (mdText) => {
   });
 };
 
+// Helper function to diagnose and format pipeline execution errors
+const parsePipelineError = (err, responseStatus, apiUrl) => {
+  const errMsg = (err && err.message) ? err.message : String(err || '');
+  const isFailedToFetch = errMsg.toLowerCase().includes('failed to fetch') || 
+                          errMsg.toLowerCase().includes('networkerror') ||
+                          err?.name === 'TypeError';
+  
+  if (isFailedToFetch) {
+    const isLocalhost = apiUrl.includes('127.0.0.1') || apiUrl.includes('localhost');
+    return {
+      type: 'NETWORK_ERROR',
+      badge: 'Server Unreachable / CORS',
+      title: 'Unable to Connect to Backend API',
+      summary: `The frontend could not reach the backend server at "${apiUrl}".`,
+      causes: [
+        isLocalhost 
+          ? 'Connecting to local server (127.0.0.1). If deployed online (Vercel/Netlify), set the VITE_API_URL environment variable to your production backend URL.'
+          : 'The backend service is currently offline or unreachable.',
+        'If hosted on a free cloud provider (e.g. Render), the server spins down after 15 minutes of inactivity and takes ~60 seconds to boot up on request.',
+        'Browser security or CORS restrictions blocked the cross-origin API request.'
+      ],
+      detail: errMsg || 'TypeError: Failed to fetch',
+      apiUrl: apiUrl,
+      status: responseStatus || 'Network Failure'
+    };
+  }
+
+  if (responseStatus === 502 || responseStatus === 504 || errMsg.includes('502') || errMsg.includes('504')) {
+    return {
+      type: 'COLD_START',
+      badge: 'Free Tier Cold Start (502/504)',
+      title: 'Backend Container Waking Up',
+      summary: 'The backend server timed out while starting up or processing the request.',
+      causes: [
+        'Free cloud hosting (e.g., Render Free Plan) puts backend containers to sleep after 15 minutes of inactivity.',
+        'Initial container spin-up and dependency loading can take between 50 to 90 seconds.',
+        'Heavy ML calculations (KNN Imputation & Random Forest) timed out on the host gateway.'
+      ],
+      detail: errMsg || `HTTP ${responseStatus} Gateway Timeout`,
+      apiUrl: apiUrl,
+      status: responseStatus || 502
+    };
+  }
+
+  if (responseStatus === 500 || errMsg.includes('500')) {
+    return {
+      type: 'SERVER_ERROR',
+      badge: 'Backend Exception (500)',
+      title: 'Model Pipeline Execution Error',
+      summary: 'The backend server encountered an unhandled error during multi-agent analysis.',
+      causes: [
+        'Historical data source (Yahoo Finance) or news scrapers were rate-limited or failed for ticker.',
+        'Memory limit exceeded (512MB RAM cap on free tier hosting).',
+        'Model training error during feature matrix alignment.'
+      ],
+      detail: errMsg,
+      apiUrl: apiUrl,
+      status: 500
+    };
+  }
+
+  return {
+    type: 'GENERIC_ERROR',
+    badge: 'Pipeline Error',
+    title: 'Pipeline Execution Failed',
+    summary: errMsg || 'An unexpected error occurred while executing the stock analysis pipeline.',
+    causes: [
+      'The requested stock ticker might be invalid or unlisted.',
+      'One or more social scraper agents failed to complete within the request timeout.',
+      'Check browser console (F12) for detailed network trace.'
+    ],
+    detail: errMsg,
+    apiUrl: apiUrl,
+    status: responseStatus || 'Error'
+  };
+};
+
 const DEFAULT_WATCHLIST = [
   { ticker: 'RELIANCE', rec: 'BUY' },
   { ticker: 'TCS', rec: 'HOLD' },
@@ -124,7 +202,38 @@ function App() {
   const [watchlist, setWatchlist] = useState([]);
   const [cache, setCache] = useState({});
 
+  // Health check & diagnostic state
+  const [healthCheckState, setHealthCheckState] = useState({ status: 'idle', message: '' });
+  const [showTechDetails, setShowTechDetails] = useState(false);
+
   const terminalEndRef = useRef(null);
+
+  // Test connection to backend health endpoint
+  const testBackendHealth = async () => {
+    setHealthCheckState({ status: 'checking', message: 'Pinging backend API endpoint...' });
+    const rawUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+    const API_BASE_URL = rawUrl.replace(/\/+$/, '');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/health`, { method: 'GET' });
+      if (res.ok) {
+        const json = await res.json();
+        setHealthCheckState({ 
+          status: 'online', 
+          message: `Backend Online (${json.status || 'healthy'}). Server is ready!` 
+        });
+      } else {
+        setHealthCheckState({ 
+          status: 'offline', 
+          message: `Backend returned status ${res.status}. Container may be booting.` 
+        });
+      }
+    } catch (err) {
+      setHealthCheckState({ 
+        status: 'offline', 
+        message: `Unreachable: ${err.message}. Check API URL (${API_BASE_URL}).` 
+      });
+    }
+  };
 
   // Initialize watchlist from Local Storage
   useEffect(() => {
@@ -173,9 +282,11 @@ function App() {
     setData(null);
     setTicker(targetTicker);
 
+    const rawUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+    const API_BASE_URL = rawUrl.replace(/\/+$/, '');
+    let responseStatus = null;
+
     try {
-      const rawUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
-      const API_BASE_URL = rawUrl.replace(/\/+$/, '');
       const response = await fetch(`${API_BASE_URL}/api/analyze`, {
         method: 'POST',
         headers: {
@@ -188,9 +299,18 @@ function App() {
         }),
       });
 
+      responseStatus = response.status;
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to complete analysis pipeline.');
+        let errorDetail = '';
+        try {
+          const errorData = await response.json();
+          errorDetail = errorData.detail || errorData.message || response.statusText;
+        } catch {
+          const rawText = await response.text();
+          errorDetail = rawText.slice(0, 300) || `Server responded with HTTP status ${response.status}`;
+        }
+        throw new Error(errorDetail || `Analysis request failed with status ${response.status}`);
       }
 
       const result = await response.json();
@@ -211,8 +331,9 @@ function App() {
       }
 
     } catch (err) {
-      console.error(err);
-      setError(err.message);
+      console.error('Analysis Pipeline Error:', err);
+      const structuredError = parsePipelineError(err, responseStatus, API_BASE_URL);
+      setError(structuredError);
     } finally {
       setIsLoading(false);
     }
@@ -230,6 +351,43 @@ function App() {
       const recMatch = data.recommendation.match(/\*\*Final Advice\*\*: `([^`]+)`/);
       const advice = recMatch ? recMatch[1] : 'HOLD';
       saveWatchlist([...watchlist, { ticker: currentTicker, rec: advice }]);
+    }
+  };
+
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExportExcel = async () => {
+    if (!data) return;
+    setIsExporting(true);
+    try {
+      const rawUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+      const API_BASE_URL = rawUrl.replace(/\/+$/, '');
+      const response = await fetch(`${API_BASE_URL}/api/export/excel`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to compile Excel workbook.');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SentiScrapper_Financial_Model_${data.ticker}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err) {
+      console.error(err);
+      alert('Error downloading Excel report: ' + err.message);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -480,6 +638,24 @@ function App() {
           </form>
         </section>
 
+        {/* IDLE READY STATE */}
+        {!data && !isLoading && !error && (
+          <section className="glass-panel text-center py-12 px-6 mb-8 border border-indigo-500/20 bg-slate-900/60 rounded-2xl shadow-xl">
+            <div className="mx-auto h-14 w-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400 mb-4 shadow-glow">
+              <Cpu className="h-7 w-7" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-2">Ready to Run Multi-Agent Analysis</h2>
+            <p className="text-sm text-slate-400 max-w-lg mx-auto mb-6 leading-relaxed">
+              Select a stock ticker symbol above and click <strong className="text-indigo-300">"Analyze Stock"</strong> to start fetching market data, social sentiment, and running predictive machine learning models.
+            </p>
+            <div className="flex items-center justify-center gap-6 text-xs text-slate-400 flex-wrap">
+              <span className="flex items-center gap-1.5"><CheckCircle className="h-4 w-4 text-emerald-400" /> Market Data Miner</span>
+              <span className="flex items-center gap-1.5"><CheckCircle className="h-4 w-4 text-purple-400" /> Multi-Platform Social Miner</span>
+              <span className="flex items-center gap-1.5"><CheckCircle className="h-4 w-4 text-amber-400" /> Random Forest / LSTM Engine</span>
+            </div>
+          </section>
+        )}
+
         {/* LOADING TERMINAL LOGS SCREEN */}
         {isLoading && (
           <section className="glass-panel mb-8">
@@ -498,14 +674,100 @@ function App() {
           </section>
         )}
 
-        {/* ERROR PANEL */}
+        {/* ENHANCED DIAGNOSTIC ERROR PANEL */}
         {error && (
-          <div className="p-4 mb-8 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 mt-0.5 flex-shrink-0" />
-            <div>
-              <h3 className="font-semibold">Pipeline Execution Failed</h3>
-              <p className="text-sm mt-1">{error}</p>
+          <div className="p-6 mb-8 bg-slate-900/90 border border-rose-500/30 rounded-2xl shadow-xl space-y-5 text-slate-200">
+            {/* Header section */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+              <div className="flex items-start gap-3">
+                <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded-xl">
+                  <AlertTriangle className="h-6 w-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-lg font-bold text-white">{error.title}</h3>
+                    <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-rose-500/20 border border-rose-500/30 text-rose-300">
+                      {error.badge}
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-300 mt-1">{error.summary}</p>
+                </div>
+              </div>
+              
+              {/* Primary Retry Action */}
+              <button
+                onClick={(e) => handleAnalyze(e)}
+                className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-medium rounded-xl flex items-center justify-center gap-2 text-sm shadow-md transition-all flex-shrink-0 cursor-pointer"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Retry Analysis
+              </button>
             </div>
+
+            {/* Diagnostic Checklist */}
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2.5 flex items-center gap-1.5">
+                <Info className="h-4 w-4 text-amber-400" />
+                Possible Causes & Recommended Solutions:
+              </h4>
+              <ul className="space-y-2 text-sm text-slate-300 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80">
+                {error.causes.map((cause, idx) => (
+                  <li key={idx} className="flex items-start gap-2.5">
+                    <span className="text-amber-400 font-bold mt-0.5">•</span>
+                    <span>{cause}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Real-time Health Check & Tech Details Toggle */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-2">
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  onClick={testBackendHealth}
+                  disabled={healthCheckState.status === 'checking'}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-slate-200 rounded-xl flex items-center gap-2 transition-colors cursor-pointer"
+                >
+                  <Activity className={`h-3.5 w-3.5 text-indigo-400 ${healthCheckState.status === 'checking' ? 'animate-spin' : ''}`} />
+                  Test Backend Connection
+                </button>
+
+                {healthCheckState.status !== 'idle' && (
+                  <span className={`text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-1.5 ${
+                    healthCheckState.status === 'online'
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      : healthCheckState.status === 'checking'
+                      ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                      : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                  }`}>
+                    {healthCheckState.status === 'online' && <CheckCircle className="h-3.5 w-3.5" />}
+                    {healthCheckState.status === 'offline' && <AlertTriangle className="h-3.5 w-3.5" />}
+                    {healthCheckState.message}
+                  </span>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowTechDetails(!showTechDetails)}
+                className="text-xs text-slate-400 hover:text-slate-200 underline flex items-center gap-1 cursor-pointer"
+              >
+                {showTechDetails ? 'Hide technical logs' : 'Show technical details'}
+              </button>
+            </div>
+
+            {/* Collapsible Technical Details */}
+            {showTechDetails && (
+              <div className="mt-3 p-4 bg-slate-950 rounded-xl border border-slate-800 text-xs font-mono space-y-2 text-slate-400 overflow-x-auto">
+                <div><span className="text-slate-500">Target Endpoint:</span> <span className="text-indigo-300">{error.apiUrl}/api/analyze</span></div>
+                <div><span className="text-slate-500">HTTP Status Code:</span> <span className="text-amber-300">{String(error.status)}</span></div>
+                <div><span className="text-slate-500">Raw Traceback / Message:</span></div>
+                <pre className="p-3 bg-slate-900 rounded-lg text-rose-300 whitespace-pre-wrap break-all border border-slate-800/60 font-mono">
+                  {error.detail || 'No additional traceback available.'}
+                </pre>
+              </div>
+            )}
           </div>
         )}
 
@@ -527,12 +789,29 @@ function App() {
                     <p className="text-xs text-slate-400">Analysis run using {data.model_type} algorithm</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3 flex-wrap">
                   <button 
                     onClick={handleAddToWatchlist}
                     className="btn-primary !py-2 !px-4 !text-xs !bg-slate-900/80 !border !border-slate-800 hover:!border-indigo-500 text-white"
                   >
                     {watchlist.some(w => w.ticker === data.ticker) ? 'Remove Watchlist' : 'Add Watchlist'}
+                  </button>
+                  <button 
+                    onClick={handleExportExcel}
+                    disabled={isExporting}
+                    className="btn-primary !py-2 !px-4 !text-xs !bg-emerald-600 hover:!bg-emerald-500 !border-none text-white flex items-center gap-1.5 shadow-lg shadow-emerald-900/20"
+                  >
+                    {isExporting ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        Generating Model...
+                      </>
+                    ) : (
+                      <>
+                        <FileSpreadsheet className="h-3.5 w-3.5" />
+                        Export Excel Model (.xlsx)
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
